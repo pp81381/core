@@ -10,44 +10,68 @@ import logging
 
 import voluptuous as vol
 
-from homeassistant.components.media_player import (
-    DOMAIN, PLATFORM_SCHEMA, MediaPlayerDevice)
+from homeassistant.components.media_player import DOMAIN, PLATFORM_SCHEMA
 from homeassistant.components.media_player.const import (
-    SUPPORT_SELECT_SOURCE, SUPPORT_TURN_OFF, SUPPORT_TURN_ON,
-    SUPPORT_VOLUME_MUTE, SUPPORT_VOLUME_SET, SUPPORT_VOLUME_STEP)
+    SUPPORT_SELECT_SOURCE,
+    SUPPORT_TURN_OFF,
+    SUPPORT_TURN_ON,
+    SUPPORT_VOLUME_MUTE,
+    SUPPORT_VOLUME_SET,
+    SUPPORT_VOLUME_STEP,
+)
 from homeassistant.const import (
-    ATTR_ENTITY_ID, CONF_DEVICE, CONF_NAME, EVENT_HOMEASSISTANT_STOP,
-    STATE_OFF, STATE_ON)
+    ATTR_ENTITY_ID,
+    CONF_DEVICE,
+    CONF_NAME,
+    EVENT_HOMEASSISTANT_STOP,
+    STATE_OFF,
+    STATE_ON,
+)
 import homeassistant.helpers.config_validation as cv
+
+try:
+    from homeassistant.components.media_player import MediaPlayerEntity
+except ImportError:
+    from homeassistant.components.media_player import (
+        MediaPlayerDevice as MediaPlayerEntity,
+    )
 
 _LOGGER = logging.getLogger(__name__)
 
-DEFAULT_NAME = 'Rotel RSP-1570'
+DEFAULT_NAME = "Rotel RSP-1570"
 
-SUPPORT_ROTEL_RSP1570 = \
-    SUPPORT_VOLUME_SET | SUPPORT_VOLUME_STEP | SUPPORT_VOLUME_MUTE | \
-    SUPPORT_TURN_ON | SUPPORT_TURN_OFF | SUPPORT_SELECT_SOURCE
+SUPPORT_ROTEL_RSP1570 = (
+    SUPPORT_VOLUME_SET
+    | SUPPORT_VOLUME_STEP
+    | SUPPORT_VOLUME_MUTE
+    | SUPPORT_TURN_ON
+    | SUPPORT_TURN_OFF
+    | SUPPORT_SELECT_SOURCE
+)
 
 ROTEL_RSP1570_SOURCES = {
-    ' CD': 'SOURCE_CD',
-    'TUNER': 'SOURCE_TUNER',
-    'TAPE': 'SOURCE_TAPE',
-    'VIDEO 1': 'SOURCE_VIDEO_1',
-    'VIDEO 2': 'SOURCE_VIDEO_2',
-    'VIDEO 3': 'SOURCE_VIDEO_3',
-    'VIDEO 4': 'SOURCE_VIDEO_4',
-    'VIDEO 5': 'SOURCE_VIDEO_5',
-    'MULTI': 'SOURCE_MULTI_INPUT',
+    " CD": "SOURCE_CD",
+    "TUNER": "SOURCE_TUNER",
+    "TAPE": "SOURCE_TAPE",
+    "VIDEO 1": "SOURCE_VIDEO_1",
+    "VIDEO 2": "SOURCE_VIDEO_2",
+    "VIDEO 3": "SOURCE_VIDEO_3",
+    "VIDEO 4": "SOURCE_VIDEO_4",
+    "VIDEO 5": "SOURCE_VIDEO_5",
+    "MULTI": "SOURCE_MULTI_INPUT",
 }
 
 CONF_SOURCE_ALIASES = "source_aliases"
 
-PLATFORM_SCHEMA = PLATFORM_SCHEMA.extend({
-    vol.Required(CONF_DEVICE): cv.string,
-    vol.Optional(CONF_NAME, default=DEFAULT_NAME): cv.string,
-    vol.Optional(CONF_SOURCE_ALIASES): vol.Schema(
-        {vol.Any(*ROTEL_RSP1570_SOURCES.keys()): vol.Any(str, None)}),
-})
+PLATFORM_SCHEMA = PLATFORM_SCHEMA.extend(
+    {
+        vol.Required(CONF_DEVICE): cv.string,
+        vol.Optional(CONF_NAME, default=DEFAULT_NAME): cv.string,
+        vol.Optional(CONF_SOURCE_ALIASES): vol.Schema(
+            {vol.Any(*ROTEL_RSP1570_SOURCES.keys()): vol.Any(str, None)}
+        ),
+    }
+)
 
 ATTR_SOURCE_NAME = "source_name"
 ATTR_VOLUME = "volume"
@@ -64,36 +88,31 @@ ATTR_TRIGGERS = "triggers"
 
 ATTR_COMMAND_NAME = "command_name"
 SERVICE_SEND_COMMAND = "rotel_send_command"
-SERVICE_SEND_COMMAND_SCHEMA = vol.Schema({
-    vol.Required(ATTR_ENTITY_ID): cv.comp_entity_ids,
-    vol.Required(ATTR_COMMAND_NAME): cv.string,
-})
+SERVICE_SEND_COMMAND_SCHEMA = vol.Schema(
+    {
+        vol.Required(ATTR_ENTITY_ID): cv.comp_entity_ids,
+        vol.Required(ATTR_COMMAND_NAME): cv.string,
+    }
+)
 SERVICE_RECONNECT = "rotel_reconnect"
-SERVICE_RECONNECT_SCHEMA = vol.Schema({
-    vol.Required(ATTR_ENTITY_ID): cv.comp_entity_ids,
-})
+SERVICE_RECONNECT_SCHEMA = vol.Schema(
+    {vol.Required(ATTR_ENTITY_ID): cv.comp_entity_ids,}
+)
 
 
-async def async_setup_platform(
-        hass,
-        config,
-        async_add_entities,
-        discovery_info=None):
+async def async_setup_platform(hass, config, async_add_entities, discovery_info=None):
     """Set up the rsp1570serial platform."""
     # pylint: disable=unused-argument
 
     device = RotelMediaPlayer(
-        config.get(CONF_NAME),
-        config.get(CONF_DEVICE),
-        config.get(CONF_SOURCE_ALIASES))
+        config.get(CONF_NAME), config.get(CONF_DEVICE), config.get(CONF_SOURCE_ALIASES)
+    )
 
     async def handle_hass_stop_event(event):
         """Clean up when hass stops."""
         await device.cleanup()
 
-    hass.bus.async_listen_once(
-        EVENT_HOMEASSISTANT_STOP,
-        handle_hass_stop_event)
+    hass.bus.async_listen_once(EVENT_HOMEASSISTANT_STOP, handle_hass_stop_event)
     _LOGGER.debug("Registered device '%s' for HASS stop event", device.name)
 
     await device.open_connection()
@@ -120,35 +139,41 @@ def setup_hass_services(hass):
                 "%s service sending command %s to entity %s",
                 SERVICE_SEND_COMMAND,
                 command_name,
-                entity.entity_id)
+                entity.entity_id,
+            )
             await entity.send_command(command_name)
         else:
             _LOGGER.debug(
                 "%s service not sending command %s to incompatible entity %s",
                 SERVICE_SEND_COMMAND,
                 command_name,
-                entity.entity_id)
+                entity.entity_id,
+            )
 
     async def async_handle_reconnect(entity, call):
         # pylint: disable=unused-argument
         if isinstance(entity, RotelMediaPlayer):
-            _LOGGER.debug("%s service reconnecting entity %s",
-                          SERVICE_RECONNECT, entity.entity_id)
+            _LOGGER.debug(
+                "%s service reconnecting entity %s", SERVICE_RECONNECT, entity.entity_id
+            )
             await entity.reconnect()
         else:
-            _LOGGER.debug("%s service not reconnecting incompatible entity %s",
-                          SERVICE_RECONNECT, entity.entity_id)
+            _LOGGER.debug(
+                "%s service not reconnecting incompatible entity %s",
+                SERVICE_RECONNECT,
+                entity.entity_id,
+            )
 
     component = hass.data[DOMAIN]
     component.async_register_entity_service(
-        SERVICE_SEND_COMMAND, SERVICE_SEND_COMMAND_SCHEMA,
-        async_handle_send_command)
+        SERVICE_SEND_COMMAND, SERVICE_SEND_COMMAND_SCHEMA, async_handle_send_command
+    )
     component.async_register_entity_service(
-        SERVICE_RECONNECT, SERVICE_RECONNECT_SCHEMA,
-        async_handle_reconnect)
+        SERVICE_RECONNECT, SERVICE_RECONNECT_SCHEMA, async_handle_reconnect
+    )
 
 
-class RotelMediaPlayer(MediaPlayerDevice):
+class RotelMediaPlayer(MediaPlayerEntity):
     """Representation of a Rotel media player."""
 
     # pylint: disable=abstract-method
@@ -184,6 +209,7 @@ class RotelMediaPlayer(MediaPlayerDevice):
     async def open_connection(self):
         """Open a connection to the device."""
         from rsp1570serial.connection import RotelAmpConn
+
         conn = RotelAmpConn(self._device)
         try:
             await conn.open()
@@ -199,15 +225,15 @@ class RotelMediaPlayer(MediaPlayerDevice):
 
     def start_read_messages(self, hass):
         """Create a task to start reading messages."""
-        self._read_messages_task = hass.loop.create_task(
-            self.async_read_messages()
-        )
+        self._read_messages_task = hass.loop.create_task(self.async_read_messages())
 
     async def cancel_read_messages(self):
         """Cancel the _read_messages_task."""
         if self._read_messages_task is not None:
-            _LOGGER.info("Cancelling read_messages task.  Done was: %r.",
-                         self._read_messages_task.done())
+            _LOGGER.info(
+                "Cancelling read_messages task.  Done was: %r.",
+                self._read_messages_task.done(),
+            )
             if not self._read_messages_task.done():
                 self._read_messages_task.cancel()
                 await self._read_messages_task
@@ -215,8 +241,8 @@ class RotelMediaPlayer(MediaPlayerDevice):
                 ex = self._read_messages_task.exception()
                 if ex is not None:
                     _LOGGER.error(
-                        "Read messages task contained an exception.",
-                        exc_info=ex)
+                        "Read messages task contained an exception.", exc_info=ex
+                    )
             self._read_messages_task = None
 
     async def async_read_messages(self):
@@ -232,17 +258,21 @@ class RotelMediaPlayer(MediaPlayerDevice):
         """
         _LOGGER.info("Message reader started for %s.", self.name)
         try:
-            await self.send_command('DISPLAY_REFRESH')
+            await self.send_command("DISPLAY_REFRESH")
             async for message in self._conn.read_messages():
                 _LOGGER.debug("Message received by %s.", self.name)
                 self.handle_message(message)
         except asyncio.CancelledError:
             _LOGGER.info("Message reader cancelled for %s", self.name)
         except Exception:
-            _LOGGER.error((
-                "Message reader for '%s' exiting due to unexpected exception. "
-                "Message reader can be reinstated by calling '%s' service."
-            ), self.name, SERVICE_RECONNECT)
+            _LOGGER.error(
+                (
+                    "Message reader for '%s' exiting due to unexpected exception. "
+                    "Message reader can be reinstated by calling '%s' service."
+                ),
+                self.name,
+                SERVICE_RECONNECT,
+            )
             raise
 
     async def reconnect(self):
@@ -331,6 +361,7 @@ class RotelMediaPlayer(MediaPlayerDevice):
     def handle_message(self, message):
         """Route each type of message to an appropriate handler."""
         from rsp1570serial.messages import FeedbackMessage, TriggerMessage
+
         if isinstance(message, FeedbackMessage):
             self.handle_feedback_message(message)
         elif isinstance(message, TriggerMessage):
@@ -341,36 +372,57 @@ class RotelMediaPlayer(MediaPlayerDevice):
     def handle_feedback_message(self, message):
         """Map feedback message to object attributes."""
         fields = message.parse_display_lines()
-        self._state = STATE_ON if fields['is_on'] else STATE_OFF
-        self._source_name = fields['source_name']
-        self._volume = fields['volume']
+        self._state = STATE_ON if fields["is_on"] else STATE_OFF
+        self._source_name = fields["source_name"]
+        self._volume = fields["volume"]
         _LOGGER.debug("Volume from amp is %r", self._volume)
-        self._mute_on = fields['mute_on']
-        self._party_mode_on = fields['party_mode_on']
-        self._info = fields['info']
+        self._mute_on = fields["mute_on"]
+        self._party_mode_on = fields["party_mode_on"]
+        self._info = fields["info"]
         self._icons = message.icons_that_are_on()
 
         def binary_sensor_value(icon_flag):
             return False if icon_flag is None else bool(icon_flag)
 
         self._speaker_icons = {
-            k: binary_sensor_value(message.icons[k]) for k in (
-                'CBL', 'CBR', 'SB', 'SL', 'SR', 'SW', 'FL', 'C', 'FR')}
+            k: binary_sensor_value(message.icons[k])
+            for k in ("CBL", "CBR", "SB", "SL", "SR", "SW", "FL", "C", "FR")
+        }
         self._state_icons = {
-            k: binary_sensor_value(message.icons[k]) for k in (
-                'Standby LED', 'Zone', 'Zone 2', 'Zone 3', 'Zone 4',
-                'Display Mode0', 'Display Mode1')}
+            k: binary_sensor_value(message.icons[k])
+            for k in (
+                "Standby LED",
+                "Zone",
+                "Zone 2",
+                "Zone 3",
+                "Zone 4",
+                "Display Mode0",
+                "Display Mode1",
+            )
+        }
         self._sound_mode_icons = {
-            k: binary_sensor_value(message.icons[k]) for k in (
-                'Pro Logic', 'II', 'x', 'Dolby Digital', 'dts', 'ES',
-                'EX', '5.1', '7.1')}
+            k: binary_sensor_value(message.icons[k])
+            for k in (
+                "Pro Logic",
+                "II",
+                "x",
+                "Dolby Digital",
+                "dts",
+                "ES",
+                "EX",
+                "5.1",
+                "7.1",
+            )
+        }
         self._input_icons = {
-            k: binary_sensor_value(message.icons[k]) for k in (
-                'HDMI', 'Coaxial', 'Optical', 'A', '1', '2', '3', '4', '5')}
+            k: binary_sensor_value(message.icons[k])
+            for k in ("HDMI", "Coaxial", "Optical", "A", "1", "2", "3", "4", "5")
+        }
         # Not actually sure what these are.
         # Might move them if I ever work it out.
         self._misc_icons = {
-            k: binary_sensor_value(message.icons[k]) for k in ('<', '>')}
+            k: binary_sensor_value(message.icons[k]) for k in ("<", ">")
+        }
         self.async_schedule_update_ha_state()
 
     def handle_trigger_message(self, message):
@@ -400,18 +452,18 @@ class RotelMediaPlayer(MediaPlayerDevice):
 
     async def async_turn_on(self):
         """Turn the media player on."""
-        await self._conn.send_command('POWER_ON')
+        await self._conn.send_command("POWER_ON")
         self._state = STATE_ON
 
     async def async_turn_off(self):
         """Turn off media player."""
-        await self._conn.send_command('POWER_OFF')
+        await self._conn.send_command("POWER_OFF")
         self._state = STATE_OFF
 
     @property
     def source_list(self):
         """Return the list of available input sources."""
-        return sorted((self._sources_to_select.keys()))
+        return sorted(self._sources_to_select.keys())
 
     @property
     def source(self):
@@ -424,11 +476,11 @@ class RotelMediaPlayer(MediaPlayerDevice):
 
     async def async_volume_up(self):
         """Volume up media player."""
-        await self._conn.send_command('VOLUME_UP')
+        await self._conn.send_command("VOLUME_UP")
 
     async def async_volume_down(self):
         """Volume down media player."""
-        await self._conn.send_command('VOLUME_DOWN')
+        await self._conn.send_command("VOLUME_DOWN")
 
     async def async_mute_volume(self, mute):
         """Mute (true) or unmute (false) media player."""
@@ -438,11 +490,11 @@ class RotelMediaPlayer(MediaPlayerDevice):
         # info display
         if self._mute_on is None:
             # Chances are that this is the right thing to do
-            await self._conn.send_command('MUTE_TOGGLE')
+            await self._conn.send_command("MUTE_TOGGLE")
         elif self._mute_on and not mute:
-            await self._conn.send_command('MUTE_TOGGLE')
+            await self._conn.send_command("MUTE_TOGGLE")
         elif not self._mute_on and mute:
-            await self._conn.send_command('MUTE_TOGGLE')
+            await self._conn.send_command("MUTE_TOGGLE")
 
     @property
     def device_state_attributes(self):
@@ -468,6 +520,7 @@ class RotelMediaPlayer(MediaPlayerDevice):
     def _volume_max(self):
         """Max volume level of the media player."""
         from rsp1570serial.commands import MAX_VOLUME
+
         return MAX_VOLUME
 
     @property
