@@ -22,7 +22,6 @@ from homeassistant.components.media_player.const import (
 from homeassistant.const import (
     ATTR_ENTITY_ID,
     CONF_DEVICE,
-    CONF_NAME,
     EVENT_HOMEASSISTANT_STOP,
     STATE_OFF,
     STATE_ON,
@@ -38,7 +37,7 @@ except ImportError:
 
 _LOGGER = logging.getLogger(__name__)
 
-DEFAULT_NAME = "Rotel RSP-1570"
+DEFAULT_ENTITY_NAME = "Rotel Amplifier"
 
 SUPPORT_ROTEL_RSP1570 = (
     SUPPORT_VOLUME_SET
@@ -62,11 +61,12 @@ ROTEL_RSP1570_SOURCES = {
 }
 
 CONF_SOURCE_ALIASES = "source_aliases"
+CONF_UNIQUE_ID = "unique_id"
 
 PLATFORM_SCHEMA = PLATFORM_SCHEMA.extend(
     {
         vol.Required(CONF_DEVICE): cv.string,
-        vol.Optional(CONF_NAME, default=DEFAULT_NAME): cv.string,
+        vol.Required(CONF_UNIQUE_ID): cv.string,
         vol.Optional(CONF_SOURCE_ALIASES): vol.Schema(
             {vol.Any(*ROTEL_RSP1570_SOURCES.keys()): vol.Any(str, None)}
         ),
@@ -96,7 +96,7 @@ SERVICE_SEND_COMMAND_SCHEMA = vol.Schema(
 )
 SERVICE_RECONNECT = "rotel_reconnect"
 SERVICE_RECONNECT_SCHEMA = vol.Schema(
-    {vol.Required(ATTR_ENTITY_ID): cv.comp_entity_ids,}
+    {vol.Required(ATTR_ENTITY_ID): cv.comp_entity_ids}
 )
 
 
@@ -105,7 +105,9 @@ async def async_setup_platform(hass, config, async_add_entities, discovery_info=
     # pylint: disable=unused-argument
 
     device = RotelMediaPlayer(
-        config.get(CONF_NAME), config.get(CONF_DEVICE), config.get(CONF_SOURCE_ALIASES)
+        config.get(CONF_UNIQUE_ID),
+        config.get(CONF_DEVICE),
+        config.get(CONF_SOURCE_ALIASES),
     )
 
     async def handle_hass_stop_event(event):
@@ -113,7 +115,7 @@ async def async_setup_platform(hass, config, async_add_entities, discovery_info=
         await device.cleanup()
 
     hass.bus.async_listen_once(EVENT_HOMEASSISTANT_STOP, handle_hass_stop_event)
-    _LOGGER.debug("Registered device '%s' for HASS stop event", device.name)
+    _LOGGER.debug("Registered device '%s' for HASS stop event", device.unique_id)
 
     await device.open_connection()
 
@@ -180,9 +182,9 @@ class RotelMediaPlayer(MediaPlayerEntity):
     # pylint: disable=too-many-public-methods
     # pylint: disable=too-many-instance-attributes
 
-    def __init__(self, name, device, source_aliases):
+    def __init__(self, unique_id, device, source_aliases):
         """Initialize the device."""
-        self._name = name
+        self._unique_id = unique_id
         self._device = device
         self._conn = None  # Make sure that you call open_connection...
         self._read_messages_task = None  # ... and start_read_messages
@@ -200,6 +202,11 @@ class RotelMediaPlayer(MediaPlayerEntity):
         self._sound_mode_icons = None
         self._misc_icons = None
         self._triggers = None
+
+    @property
+    def unique_id(self) -> str:
+        """Return the unique ID of the device."""
+        return self._unique_id
 
     @property
     def should_poll(self) -> bool:
@@ -256,21 +263,21 @@ class RotelMediaPlayer(MediaPlayerEntity):
         simply trigger a feedback message that will sync the state of this
         object with the physical device.
         """
-        _LOGGER.info("Message reader started for %s.", self.name)
+        _LOGGER.info("Message reader started for %s.", self.unique_id)
         try:
             await self.send_command("DISPLAY_REFRESH")
             async for message in self._conn.read_messages():
-                _LOGGER.debug("Message received by %s.", self.name)
+                _LOGGER.debug("Message received by %s.", self.unique_id)
                 self.handle_message(message)
         except asyncio.CancelledError:
-            _LOGGER.info("Message reader cancelled for %s", self.name)
+            _LOGGER.info("Message reader cancelled for %s", self.unique_id)
         except Exception:
             _LOGGER.error(
                 (
                     "Message reader for '%s' exiting due to unexpected exception. "
                     "Message reader can be reinstated by calling '%s' service."
                 ),
-                self.name,
+                self.unique_id,
                 SERVICE_RECONNECT,
             )
             raise
@@ -310,10 +317,10 @@ class RotelMediaPlayer(MediaPlayerEntity):
 
     async def cleanup(self):
         """Close connection and stop message reader."""
-        _LOGGER.info("Cleaning up '%s'", self.name)
+        _LOGGER.info("Cleaning up '%s'", self.unique_id)
         await self.cancel_read_messages()
         self.close_connection()
-        _LOGGER.info("Finished cleaning up '%s'", self.name)
+        _LOGGER.info("Finished cleaning up '%s'", self.unique_id)
 
     def set_source_lists(self, source_aliases):
         """
@@ -432,8 +439,8 @@ class RotelMediaPlayer(MediaPlayerEntity):
 
     @property
     def name(self):
-        """Return the name of the device."""
-        return self._name
+        """Return the name of the entity."""
+        return DEFAULT_ENTITY_NAME
 
     @property
     def supported_features(self):
