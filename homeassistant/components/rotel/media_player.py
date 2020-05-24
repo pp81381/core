@@ -1,10 +1,4 @@
-"""
-Rotel platform.
-
-Although only the RSP-1570 is supported at the moment, the
-low level library could easily be updated to support other
-products of a similar vintage.
-"""
+"""Rotel RSP-1570 media player platform."""
 import asyncio
 import logging
 
@@ -73,9 +67,7 @@ PLATFORM_SCHEMA = PLATFORM_SCHEMA.extend(
     }
 )
 
-ATTR_SOURCE_NAME = "source_name"
-ATTR_VOLUME = "volume"
-ATTR_MUTE_ON = "mute_on"
+ATTR_DISPLAY_VOLUME = "display_volume"
 ATTR_PARTY_MODE_ON = "party_mode_on"
 ATTR_INFO = "info"
 ATTR_ICONS = "icons"
@@ -104,23 +96,11 @@ async def async_setup_platform(hass, config, async_add_entities, discovery_info=
     """Set up the rsp1570serial platform."""
     # pylint: disable=unused-argument
 
-    entity = RotelMediaPlayer(
-        config.get(CONF_UNIQUE_ID),
-        config.get(CONF_DEVICE),
-        config.get(CONF_SOURCE_ALIASES),
-    )
+    source_map = make_source_map(config.get(CONF_SOURCE_ALIASES))
 
-    async def handle_hass_stop_event(event):
-        """Clean up when hass stops."""
-        await entity.cleanup()
-
-    hass.bus.async_listen_once(EVENT_HOMEASSISTANT_STOP, handle_hass_stop_event)
-    _LOGGER.debug("Registered entity '%s' for HASS stop event", entity.unique_id)
-
-    await entity.open_connection()
+    entity = RotelMediaPlayer(config[CONF_UNIQUE_ID], config[CONF_DEVICE], source_map,)
 
     async_add_entities([entity])
-    entity.start_read_messages(hass)
     setup_hass_services(hass)
 
 
@@ -132,10 +112,9 @@ def setup_hass_services(hass):
     only needs to be called once for the platform.
     It doesn't seem to do any harm but I'd like to tidy that up at some point.
     """
-    _LOGGER.debug("Setting up hass services")
 
     async def async_handle_send_command(entity, call):
-        command_name = call.data.get(ATTR_COMMAND_NAME)
+        command_name = call.data[ATTR_COMMAND_NAME]
         if isinstance(entity, RotelMediaPlayer):
             _LOGGER.debug(
                 "%s service sending command %s to entity %s",
@@ -145,7 +124,7 @@ def setup_hass_services(hass):
             )
             await entity.send_command(command_name)
         else:
-            _LOGGER.debug(
+            _LOGGER.error(
                 "%s service not sending command %s to incompatible entity %s",
                 SERVICE_SEND_COMMAND,
                 command_name,
@@ -160,7 +139,7 @@ def setup_hass_services(hass):
             )
             await entity.reconnect()
         else:
-            _LOGGER.debug(
+            _LOGGER.error(
                 "%s service not reconnecting incompatible entity %s",
                 SERVICE_RECONNECT,
                 entity.entity_id,
@@ -175,6 +154,22 @@ def setup_hass_services(hass):
     )
 
 
+def make_source_map(source_aliases):
+    """Return a dict of selectable source aliases mapped to source name."""
+    source_map = {}
+    sources_seen = set()
+    if source_aliases is not None:
+        for source, alias in source_aliases.items():
+            sources_seen.add(source)
+            if alias is not None:
+                source_map[alias] = source
+    for source in ROTEL_RSP1570_SOURCES.keys():
+        if source not in sources_seen:
+            source_map[source] = source
+    _LOGGER.debug("Sources to select: %r", source_map)
+    return source_map
+
+
 class RotelMediaPlayer(MediaPlayerEntity):
     """Representation of a Rotel media player."""
 
@@ -182,7 +177,7 @@ class RotelMediaPlayer(MediaPlayerEntity):
     # pylint: disable=too-many-public-methods
     # pylint: disable=too-many-instance-attributes
 
-    def __init__(self, unique_id, device, source_aliases):
+    def __init__(self, unique_id, device, source_map):
         """Initialize the device."""
         self._unique_id = unique_id
         self._device = device
@@ -191,7 +186,7 @@ class RotelMediaPlayer(MediaPlayerEntity):
         self._state = STATE_OFF
         self._source_name = None
         self._volume = None
-        self.set_source_lists(source_aliases)
+        self._source_map = source_map
         self._mute_on = None
         self._party_mode_on = None
         self._info = None
@@ -213,16 +208,31 @@ class RotelMediaPlayer(MediaPlayerEntity):
         """Do not poll because this entity pushes its state to HA."""
         return False
 
+    async def async_added_to_hass(self):
+        """Open connection and set up remove event when entity added to hass."""
+        await self.open_connection()
+        self.start_read_messages()
+
+        async def handle_hass_stop_event(event):
+            """Clean up when hass stops."""
+            await self.cleanup()
+
+        self.async_on_remove(
+            self.hass.bus.async_listen_once(
+                EVENT_HOMEASSISTANT_STOP, handle_hass_stop_event
+            )
+        )
+
+    async def async_will_remove_from_hass(self) -> None:
+        """Run when entity will be removed from hass."""
+        await self.cleanup()
+
     async def open_connection(self):
         """Open a connection to the device."""
         from rsp1570serial.connection import RotelAmpConn
 
         conn = RotelAmpConn(self._device)
-        try:
-            await conn.open()
-        except Exception:
-            _LOGGER.error("Could not open connection", exc_info=True)
-            raise
+        await conn.open()
         self._conn = conn
 
     def close_connection(self):
@@ -230,9 +240,11 @@ class RotelMediaPlayer(MediaPlayerEntity):
         if self._conn is not None:
             self._conn.close()
 
-    def start_read_messages(self, hass):
+    def start_read_messages(self):
         """Create a task to start reading messages."""
-        self._read_messages_task = hass.loop.create_task(self.async_read_messages())
+        self._read_messages_task = self.hass.loop.create_task(
+            self.async_read_messages()
+        )
 
     async def cancel_read_messages(self):
         """Cancel the _read_messages_task."""
@@ -258,12 +270,11 @@ class RotelMediaPlayer(MediaPlayerEntity):
 
         Read messages published by the device and use them to maintain the
         state of this object.
-        Schedule a DISPLAY_REFRESH command before we start reading.
+        Send a DISPLAY_REFRESH command before we start reading.
         If the device is already on then this is a null command that will
         simply trigger a feedback message that will sync the state of this
         object with the physical device.
         """
-        _LOGGER.info("Message reader started for %s.", self.unique_id)
         try:
             await self.send_command("DISPLAY_REFRESH")
             async for message in self._conn.read_messages():
@@ -271,16 +282,6 @@ class RotelMediaPlayer(MediaPlayerEntity):
                 self.handle_message(message)
         except asyncio.CancelledError:
             _LOGGER.info("Message reader cancelled for %s", self.unique_id)
-        except Exception:
-            _LOGGER.error(
-                (
-                    "Message reader for '%s' exiting due to unexpected exception. "
-                    "Message reader can be reinstated by calling '%s' service."
-                ),
-                self.unique_id,
-                SERVICE_RECONNECT,
-            )
-            raise
 
     async def reconnect(self):
         """
@@ -299,8 +300,7 @@ class RotelMediaPlayer(MediaPlayerEntity):
             self.close_connection()
         # pylint: disable=broad-except
         except Exception:
-            _LOGGER.error("Could not close connection", exc_info=True)
-            _LOGGER.warning("Ignoring error and attempting to reconnect")
+            _LOGGER.exception("Could not close connection for '%s'", self.unique_id)
 
         # Set the state to OFF by default
         # If the player is actually on then the state will be refreshed
@@ -309,11 +309,7 @@ class RotelMediaPlayer(MediaPlayerEntity):
         self.async_schedule_update_ha_state()
 
         await self.open_connection()
-
-        # N.B. this line can only be executed after
-        # async_add_entities has been called and completed
-        # because otherwise self.hass won't be available.
-        self.start_read_messages(self.hass)
+        self.start_read_messages()
 
     async def cleanup(self):
         """Close connection and stop message reader."""
@@ -321,49 +317,6 @@ class RotelMediaPlayer(MediaPlayerEntity):
         await self.cancel_read_messages()
         self.close_connection()
         _LOGGER.info("Finished cleaning up '%s'", self.unique_id)
-
-    def set_source_lists(self, source_aliases):
-        """
-        Set list of sources that can be selected.
-
-        For sources that have an alias defined then let the user pick that
-        instead. To use an alias for a source, provide an entry in the
-        source_aliases map of the form <source>: <alias>
-        To suppress a source, provide an entry in the source_aliases
-        map of the form <source>: None
-        Any sources not suppressed and not aliased will remain as-is
-        Note that the amp could still be switched to one of the suppressed
-        sources using the remote control or front panel.  The
-        media player card seems to handle this gracefully enough.
-        Example of using source_aliases in configuration.yaml:
-
-        media_player:
-        - platform: rotel
-          device: /dev/ttyUSB0
-          source_aliases:
-            TAPE:
-            MULTI:
-            VIDEO 1: CATV
-            VIDEO 2: NMT
-            VIDEO 3: APPLE TV
-            VIDEO 4: FIRE TV
-            VIDEO 5: BLU RAY
-        """
-        _LOGGER.debug("source_aliases: %r", source_aliases)
-        sources_to_select = {}
-        aliased_sources = set()
-        if source_aliases is not None:
-            for source, alias in source_aliases.items():
-                if alias is None:
-                    aliased_sources.add(source)
-                else:
-                    aliased_sources.add(source)
-                    sources_to_select[alias] = ROTEL_RSP1570_SOURCES[source]
-        for source, cmd in ROTEL_RSP1570_SOURCES.items():
-            if source not in aliased_sources:
-                sources_to_select[source] = cmd
-        _LOGGER.debug("Sources to select: %r", sources_to_select)
-        self._sources_to_select = sources_to_select
 
     def handle_message(self, message):
         """Route each type of message to an appropriate handler."""
@@ -374,7 +327,7 @@ class RotelMediaPlayer(MediaPlayerEntity):
         elif isinstance(message, TriggerMessage):
             self.handle_trigger_message(message)
         else:
-            _LOGGER.warning("Unknown message type encountered")
+            _LOGGER.error("Unknown message type encountered")
 
     def handle_feedback_message(self, message):
         """Map feedback message to object attributes."""
@@ -382,7 +335,6 @@ class RotelMediaPlayer(MediaPlayerEntity):
         self._state = STATE_ON if fields["is_on"] else STATE_OFF
         self._source_name = fields["source_name"]
         self._volume = fields["volume"]
-        _LOGGER.debug("Volume from amp is %r", self._volume)
         self._mute_on = fields["mute_on"]
         self._party_mode_on = fields["party_mode_on"]
         self._info = fields["info"]
@@ -470,7 +422,7 @@ class RotelMediaPlayer(MediaPlayerEntity):
     @property
     def source_list(self):
         """Return the list of available input sources."""
-        return sorted(self._sources_to_select.keys())
+        return sorted(self._source_map.keys())
 
     @property
     def source(self):
@@ -479,7 +431,7 @@ class RotelMediaPlayer(MediaPlayerEntity):
 
     async def async_select_source(self, source):
         """Select input source."""
-        await self._conn.send_command(self._sources_to_select[source])
+        await self._conn.send_command(ROTEL_RSP1570_SOURCES[self._source_map[source]])
 
     async def async_volume_up(self):
         """Volume up media player."""
@@ -506,11 +458,8 @@ class RotelMediaPlayer(MediaPlayerEntity):
     @property
     def device_state_attributes(self):
         """Return device specific state attributes."""
-        if self.state == STATE_OFF:
-            return None
-        attributes = {
-            ATTR_SOURCE_NAME: self._source_name,
-            ATTR_VOLUME: self._volume,
+        return {
+            ATTR_DISPLAY_VOLUME: self._volume,  # Scaled differently to volume_level
             ATTR_PARTY_MODE_ON: self._party_mode_on,
             ATTR_INFO: self._info,
             ATTR_ICONS: self._icons,
@@ -521,7 +470,6 @@ class RotelMediaPlayer(MediaPlayerEntity):
             ATTR_MISC_ICONS: self._misc_icons,
             ATTR_TRIGGERS: self._triggers,
         }
-        return attributes
 
     @property
     def _volume_max(self):
