@@ -104,7 +104,7 @@ async def async_setup_platform(hass, config, async_add_entities, discovery_info=
     """Set up the rsp1570serial platform."""
     # pylint: disable=unused-argument
 
-    device = RotelMediaPlayer(
+    entity = RotelMediaPlayer(
         config.get(CONF_UNIQUE_ID),
         config.get(CONF_DEVICE),
         config.get(CONF_SOURCE_ALIASES),
@@ -112,15 +112,15 @@ async def async_setup_platform(hass, config, async_add_entities, discovery_info=
 
     async def handle_hass_stop_event(event):
         """Clean up when hass stops."""
-        await device.cleanup()
+        await entity.cleanup()
 
     hass.bus.async_listen_once(EVENT_HOMEASSISTANT_STOP, handle_hass_stop_event)
-    _LOGGER.debug("Registered device '%s' for HASS stop event", device.unique_id)
+    _LOGGER.debug("Registered entity '%s' for HASS stop event", entity.unique_id)
 
-    await device.open_connection()
+    await entity.open_connection()
 
-    async_add_entities([device])
-    device.start_read_messages(hass)
+    async_add_entities([entity])
+    entity.start_read_messages(hass)
     setup_hass_services(hass)
 
 
@@ -205,7 +205,7 @@ class RotelMediaPlayer(MediaPlayerEntity):
 
     @property
     def unique_id(self) -> str:
-        """Return the unique ID of the device."""
+        """Return the unique ID of the entity."""
         return self._unique_id
 
     @property
@@ -454,7 +454,7 @@ class RotelMediaPlayer(MediaPlayerEntity):
 
     @property
     def state(self):
-        """Return the state of the device."""
+        """Return the state of the entity."""
         return self._state
 
     async def async_turn_on(self):
