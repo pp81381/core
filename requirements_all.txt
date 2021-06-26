@@ -2015,7 +2015,7 @@ rpi-bad-power==0.1.0
 # rpi-rf==0.9.7
 
 # homeassistant.components.rotel
-rsp1570serial-pp81381==0.1.4
+rsp1570serial-pp81381==0.1.5
 
 # homeassistant.components.russound_rnet
 russound==0.1.9

@@ -2,9 +2,17 @@
 import asyncio
 import logging
 
+from rsp1570serial import ROTEL_RSP1570_SOURCES
+from rsp1570serial.commands import MAX_VOLUME
+from rsp1570serial.connection import RotelAmpConn
+from rsp1570serial.messages import FeedbackMessage, TriggerMessage
 import voluptuous as vol
 
-from homeassistant.components.media_player import DOMAIN, PLATFORM_SCHEMA
+from homeassistant.components.media_player import (
+    DOMAIN,
+    PLATFORM_SCHEMA,
+    MediaPlayerEntity,
+)
 from homeassistant.components.media_player.const import (
     SUPPORT_SELECT_SOURCE,
     SUPPORT_TURN_OFF,
@@ -22,16 +30,9 @@ from homeassistant.const import (
 )
 import homeassistant.helpers.config_validation as cv
 
-try:
-    from homeassistant.components.media_player import MediaPlayerEntity
-except ImportError:
-    from homeassistant.components.media_player import (
-        MediaPlayerDevice as MediaPlayerEntity,
-    )
+DEFAULT_ENTITY_NAME = "Rotel Amplifier"
 
 _LOGGER = logging.getLogger(__name__)
-
-DEFAULT_ENTITY_NAME = "Rotel Amplifier"
 
 SUPPORT_ROTEL_RSP1570 = (
     SUPPORT_VOLUME_SET
@@ -41,18 +42,6 @@ SUPPORT_ROTEL_RSP1570 = (
     | SUPPORT_TURN_OFF
     | SUPPORT_SELECT_SOURCE
 )
-
-ROTEL_RSP1570_SOURCES = {
-    " CD": "SOURCE_CD",
-    "TUNER": "SOURCE_TUNER",
-    "TAPE": "SOURCE_TAPE",
-    "VIDEO 1": "SOURCE_VIDEO_1",
-    "VIDEO 2": "SOURCE_VIDEO_2",
-    "VIDEO 3": "SOURCE_VIDEO_3",
-    "VIDEO 4": "SOURCE_VIDEO_4",
-    "VIDEO 5": "SOURCE_VIDEO_5",
-    "MULTI": "SOURCE_MULTI_INPUT",
-}
 
 CONF_SOURCE_ALIASES = "source_aliases"
 CONF_UNIQUE_ID = "unique_id"
@@ -91,6 +80,32 @@ SERVICE_RECONNECT_SCHEMA = vol.Schema(
     {vol.Required(ATTR_ENTITY_ID): cv.comp_entity_ids}
 )
 
+SPEAKER_ICON_NAMES = ("CBL", "CBR", "SB", "SL", "SR", "SW", "FL", "C", "FR")
+STATE_ICON_NAMES = (
+    "Standby LED",
+    "Zone",
+    "Zone 2",
+    "Zone 3",
+    "Zone 4",
+    "Display Mode0",
+    "Display Mode1",
+)
+SOUND_MODE_ICON_NAMES = (
+    "Pro Logic",
+    "II",
+    "x",
+    "Dolby Digital",
+    "dts",
+    "ES",
+    "EX",
+    "5.1",
+    "7.1",
+)
+INPUT_ICON_NAMES = ("HDMI", "Coaxial", "Optical", "A", "1", "2", "3", "4", "5")
+# Not actually sure what these are.
+# Might move them if I ever work it out.
+MISC_ICON_NAMES = ("<", ">")
+
 
 async def async_setup_platform(hass, config, async_add_entities, discovery_info=None):
     """Set up the rsp1570serial platform."""
@@ -98,7 +113,12 @@ async def async_setup_platform(hass, config, async_add_entities, discovery_info=
 
     source_map = make_source_map(config.get(CONF_SOURCE_ALIASES))
 
-    entity = RotelMediaPlayer(config[CONF_UNIQUE_ID], config[CONF_DEVICE], source_map,)
+    entity = RotelMediaPlayer(
+        config[CONF_UNIQUE_ID],
+        DEFAULT_ENTITY_NAME,
+        config[CONF_DEVICE],
+        source_map,
+    )
 
     async_add_entities([entity])
     setup_hass_services(hass)
@@ -155,19 +175,34 @@ def setup_hass_services(hass):
 
 
 def make_source_map(source_aliases):
-    """Return a dict of selectable source aliases mapped to source name."""
+    """Return a dict of selectable source aliases mapped to command_code."""
     source_map = {}
     sources_seen = set()
     if source_aliases is not None:
         for source, alias in source_aliases.items():
             sources_seen.add(source)
             if alias is not None:
-                source_map[alias] = source
-    for source in ROTEL_RSP1570_SOURCES.keys():
+                command_code = ROTEL_RSP1570_SOURCES[source]
+                source_map[alias] = command_code
+    for source, command_code in ROTEL_RSP1570_SOURCES.items():
         if source not in sources_seen:
-            source_map[source] = source
+            source_map[source] = command_code
     _LOGGER.debug("Sources to select: %r", source_map)
     return source_map
+
+
+def make_icon_state_dict(message_icons, icon_names):
+    """Extract the icon state for icon_names from message."""
+
+    def binary_sensor_value(icon_flag):
+        return False if icon_flag is None else bool(icon_flag)
+
+    return {k: binary_sensor_value(message_icons[k]) for k in icon_names}
+
+
+def init_icon_state_dict(icon_names):
+    """Initialise the icon state for icon_names."""
+    return {k: False for k in icon_names}
 
 
 class RotelMediaPlayer(MediaPlayerEntity):
@@ -177,9 +212,10 @@ class RotelMediaPlayer(MediaPlayerEntity):
     # pylint: disable=too-many-public-methods
     # pylint: disable=too-many-instance-attributes
 
-    def __init__(self, unique_id, device, source_map):
+    def __init__(self, unique_id, name, device, source_map):
         """Initialize the device."""
         self._unique_id = unique_id
+        self._name = name
         self._device = device
         self._conn = None  # Make sure that you call open_connection...
         self._read_messages_task = None  # ... and start_read_messages
@@ -191,11 +227,11 @@ class RotelMediaPlayer(MediaPlayerEntity):
         self._party_mode_on = None
         self._info = None
         self._icons = None
-        self._speaker_icons = None
-        self._state_icons = None
-        self._input_icons = None
-        self._sound_mode_icons = None
-        self._misc_icons = None
+        self._speaker_icons = init_icon_state_dict(SPEAKER_ICON_NAMES)
+        self._state_icons = init_icon_state_dict(STATE_ICON_NAMES)
+        self._sound_mode_icons = init_icon_state_dict(SOUND_MODE_ICON_NAMES)
+        self._input_icons = init_icon_state_dict(INPUT_ICON_NAMES)
+        self._misc_icons = init_icon_state_dict(MISC_ICON_NAMES)
         self._triggers = None
 
     @property
@@ -229,7 +265,6 @@ class RotelMediaPlayer(MediaPlayerEntity):
 
     async def open_connection(self):
         """Open a connection to the device."""
-        from rsp1570serial.connection import RotelAmpConn
 
         conn = RotelAmpConn(self._device)
         await conn.open()
@@ -320,7 +355,6 @@ class RotelMediaPlayer(MediaPlayerEntity):
 
     def handle_message(self, message):
         """Route each type of message to an appropriate handler."""
-        from rsp1570serial.messages import FeedbackMessage, TriggerMessage
 
         if isinstance(message, FeedbackMessage):
             self.handle_feedback_message(message)
@@ -339,49 +373,13 @@ class RotelMediaPlayer(MediaPlayerEntity):
         self._party_mode_on = fields["party_mode_on"]
         self._info = fields["info"]
         self._icons = message.icons_that_are_on()
-
-        def binary_sensor_value(icon_flag):
-            return False if icon_flag is None else bool(icon_flag)
-
-        self._speaker_icons = {
-            k: binary_sensor_value(message.icons[k])
-            for k in ("CBL", "CBR", "SB", "SL", "SR", "SW", "FL", "C", "FR")
-        }
-        self._state_icons = {
-            k: binary_sensor_value(message.icons[k])
-            for k in (
-                "Standby LED",
-                "Zone",
-                "Zone 2",
-                "Zone 3",
-                "Zone 4",
-                "Display Mode0",
-                "Display Mode1",
-            )
-        }
-        self._sound_mode_icons = {
-            k: binary_sensor_value(message.icons[k])
-            for k in (
-                "Pro Logic",
-                "II",
-                "x",
-                "Dolby Digital",
-                "dts",
-                "ES",
-                "EX",
-                "5.1",
-                "7.1",
-            )
-        }
-        self._input_icons = {
-            k: binary_sensor_value(message.icons[k])
-            for k in ("HDMI", "Coaxial", "Optical", "A", "1", "2", "3", "4", "5")
-        }
-        # Not actually sure what these are.
-        # Might move them if I ever work it out.
-        self._misc_icons = {
-            k: binary_sensor_value(message.icons[k]) for k in ("<", ">")
-        }
+        self._speaker_icons = make_icon_state_dict(message.icons, SPEAKER_ICON_NAMES)
+        self._state_icons = make_icon_state_dict(message.icons, STATE_ICON_NAMES)
+        self._sound_mode_icons = make_icon_state_dict(
+            message.icons, SOUND_MODE_ICON_NAMES
+        )
+        self._input_icons = make_icon_state_dict(message.icons, INPUT_ICON_NAMES)
+        self._misc_icons = make_icon_state_dict(message.icons, MISC_ICON_NAMES)
         self.async_schedule_update_ha_state()
 
     def handle_trigger_message(self, message):
@@ -392,7 +390,7 @@ class RotelMediaPlayer(MediaPlayerEntity):
     @property
     def name(self):
         """Return the name of the entity."""
-        return DEFAULT_ENTITY_NAME
+        return self._name
 
     @property
     def supported_features(self):
@@ -431,7 +429,7 @@ class RotelMediaPlayer(MediaPlayerEntity):
 
     async def async_select_source(self, source):
         """Select input source."""
-        await self._conn.send_command(ROTEL_RSP1570_SOURCES[self._source_map[source]])
+        await self._conn.send_command(self._source_map[source])
 
     async def async_volume_up(self):
         """Volume up media player."""
@@ -456,7 +454,7 @@ class RotelMediaPlayer(MediaPlayerEntity):
             await self._conn.send_command("MUTE_TOGGLE")
 
     @property
-    def device_state_attributes(self):
+    def extra_state_attributes(self):
         """Return device specific state attributes."""
         return {
             ATTR_DISPLAY_VOLUME: self._volume,  # Scaled differently to volume_level
@@ -474,8 +472,6 @@ class RotelMediaPlayer(MediaPlayerEntity):
     @property
     def _volume_max(self):
         """Max volume level of the media player."""
-        from rsp1570serial.commands import MAX_VOLUME
-
         return MAX_VOLUME
 
     @property
